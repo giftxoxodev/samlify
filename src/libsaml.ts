@@ -4,12 +4,12 @@
 * @desc  A simple library including some common functions
 */
 
-import { DOMParser } from 'xmldom';
+import { DOMParser } from '@xmldom/xmldom';
 import utility, { flattenDeep, isString } from './utility';
 import { algorithms, wording, namespace } from './urn';
-import { select, SelectedValue } from 'xpath';
+import { select } from 'xpath';
 import { MetadataInterface } from './metadata';
-import * as nrsa from 'node-rsa';
+import nrsa, { SigningSchemeHash } from 'node-rsa';
 import { SignedXml, FileKeyInfo } from 'xml-crypto';
 import * as xmlenc from '@authenio/xml-encryption';
 import { extract } from './extractor';
@@ -36,16 +36,16 @@ export interface SignatureConstructor {
 }
 
 export interface SignatureVerifierOptions {
-  cert?: MetadataInterface;
-  signatureAlgorithm?: string;
+  metadata?: MetadataInterface;
   keyFile?: string;
+  signatureAlgorithm?: string;
 }
 
 export interface ExtractorResult {
   [key: string]: any;
   signature?: string | string[];
   issuer?: string | string[];
-  nameid?: string;
+  nameID?: string;
   notexist?: boolean;
 }
 
@@ -58,13 +58,23 @@ export interface LoginResponseAttribute {
   valueXmlnsXsi?: string;
 }
 
+export interface LoginResponseAdditionalTemplates {
+  attributeStatementTemplate?: AttributeStatementTemplate;
+  attributeTemplate?: AttributeTemplate;
+}
+
 export interface BaseSamlTemplate {
   context: string;
 }
 
 export interface LoginResponseTemplate extends BaseSamlTemplate {
   attributes?: LoginResponseAttribute[];
+  additionalTemplates?: LoginResponseAdditionalTemplates;
 }
+export interface AttributeStatementTemplate extends BaseSamlTemplate { }
+
+export interface AttributeTemplate extends BaseSamlTemplate { }
+
 export interface LoginRequestTemplate extends BaseSamlTemplate { }
 
 export interface LogoutRequestTemplate extends BaseSamlTemplate { }
@@ -81,7 +91,7 @@ export interface LibSamlInterface {
   getQueryParamByType: (type: string) => string;
   createXPath: (local, isExtractAll?: boolean) => string;
   replaceTagsByValue: (rawXML: string, tagValues: any) => string;
-  attributeStatementBuilder: (attributes: LoginResponseAttribute[]) => string;
+  attributeStatementBuilder: (attributes: LoginResponseAttribute[], attributeTemplate: AttributeTemplate, attributeStatementTemplate: AttributeStatementTemplate) => string;
   constructSAMLSignature: (opts: SignatureConstructor) => string;
   verifySignature: (xml: string, opts) => [boolean, any];
   createKeySection: (use: KeyUse, cert: string | Buffer) => {};
@@ -97,6 +107,8 @@ export interface LibSamlInterface {
   nrsaAliasMapping: any;
   defaultLoginRequestTemplate: LoginRequestTemplate;
   defaultLoginResponseTemplate: LoginResponseTemplate;
+  defaultAttributeStatementTemplate: AttributeStatementTemplate;
+  defaultAttributeTemplate: AttributeTemplate;
   defaultLogoutRequestTemplate: LogoutRequestTemplate;
   defaultLogoutResponseTemplate: LogoutResponseTemplate;
 }
@@ -120,9 +132,9 @@ const libSaml = () => {
    *
    */
   const nrsaAliasMapping = {
-    'http://www.w3.org/2000/09/xmldsig#rsa-sha1': 'sha1',
-    'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256': 'sha256',
-    'http://www.w3.org/2001/04/xmldsig-more#rsa-sha512': 'sha512',
+    'http://www.w3.org/2000/09/xmldsig#rsa-sha1': 'pkcs1-sha1',
+    'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256': 'pkcs1-sha256',
+    'http://www.w3.org/2001/04/xmldsig-more#rsa-sha512': 'pkcs1-sha512',
   };
   /**
   * @desc Default login request template
@@ -138,6 +150,23 @@ const libSaml = () => {
   const defaultLogoutRequestTemplate = {
     context: '<samlp:LogoutRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="{ID}" Version="2.0" IssueInstant="{IssueInstant}" Destination="{Destination}"><saml:Issuer>{Issuer}</saml:Issuer><saml:NameID Format="{NameIDFormat}">{NameID}</saml:NameID></samlp:LogoutRequest>',
   };
+
+  /**
+  * @desc Default AttributeStatement template
+  * @type {AttributeStatementTemplate}
+  */
+  const defaultAttributeStatementTemplate = {
+    context: '<saml:AttributeStatement>{Attributes}</saml:AttributeStatement>',
+  };
+
+  /**
+  * @desc Default Attribute template
+  * @type {AttributeTemplate}
+  */
+  const defaultAttributeTemplate = {
+    context: '<saml:Attribute Name="{Name}" NameFormat="{NameFormat}"><saml:AttributeValue xmlns:xs="{ValueXmlnsXs}" xmlns:xsi="{ValueXmlnsXsi}" xsi:type="{ValueXsiType}">{Value}</saml:AttributeValue></saml:Attribute>',
+  };
+
   /**
   * @desc Default login response template
   * @type {LoginResponseTemplate}
@@ -145,6 +174,10 @@ const libSaml = () => {
   const defaultLoginResponseTemplate = {
     context: '<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="{ID}" Version="2.0" IssueInstant="{IssueInstant}" Destination="{Destination}" InResponseTo="{InResponseTo}"><saml:Issuer>{Issuer}</saml:Issuer><samlp:Status><samlp:StatusCode Value="{StatusCode}"/></samlp:Status><saml:Assertion xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="{AssertionID}" Version="2.0" IssueInstant="{IssueInstant}"><saml:Issuer>{Issuer}</saml:Issuer><saml:Subject><saml:NameID Format="{NameIDFormat}">{NameID}</saml:NameID><saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer"><saml:SubjectConfirmationData NotOnOrAfter="{SubjectConfirmationDataNotOnOrAfter}" Recipient="{SubjectRecipient}" InResponseTo="{InResponseTo}"/></saml:SubjectConfirmation></saml:Subject><saml:Conditions NotBefore="{ConditionsNotBefore}" NotOnOrAfter="{ConditionsNotOnOrAfter}"><saml:AudienceRestriction><saml:Audience>{Audience}</saml:Audience></saml:AudienceRestriction></saml:Conditions>{AuthnStatement}{AttributeStatement}</saml:Assertion></samlp:Response>',
     attributes: [],
+    additionalTemplates: {
+      'attributeStatementTemplate': defaultAttributeStatementTemplate,
+      'attributeTemplate': defaultAttributeTemplate
+    }
   };
   /**
   * @desc Default logout response template
@@ -159,14 +192,14 @@ const libSaml = () => {
   * @param {string} sigAlg    signature algorithm
   * @return {string/null} signing algorithm short-hand for the module node-rsa
   */
-  function getSigningScheme(sigAlg?: string): string | null {
+  function getSigningScheme(sigAlg?: string): SigningSchemeHash {
     if (sigAlg) {
       const algAlias = nrsaAliasMapping[sigAlg];
       if (!(algAlias === undefined)) {
         return algAlias;
       }
     }
-    return nrsaAliasMapping[signatureAlgorithms.RSA_SHA1]; // default value
+    return nrsaAliasMapping[signatureAlgorithms.RSA_SHA1];
   }
   /**
   * @private
@@ -203,7 +236,7 @@ const libSaml = () => {
    * @return {string}
    */
   function tagging(prefix: string, content: string): string {
-    const camelContent = camelCase(content);
+    const camelContent = camelCase(content, {locale: 'en-us'});
     return prefix + camelContent.charAt(0).toUpperCase() + camelContent.slice(1);
   }
 
@@ -213,11 +246,13 @@ const libSaml = () => {
     getQueryParamByType,
     defaultLoginRequestTemplate,
     defaultLoginResponseTemplate,
+    defaultAttributeStatementTemplate,
+    defaultAttributeTemplate,
     defaultLogoutRequestTemplate,
     defaultLogoutResponseTemplate,
 
     /**
-    * @desc Repalce the tag (e.g. {tag}) inside the raw XML
+    * @desc Replace the tag (e.g. {tag}) inside the raw XML
     * @param  {string} rawXML      raw XML string used to do keyword replacement
     * @param  {array} tagValues    tag values
     * @return {string}
@@ -231,16 +266,30 @@ const libSaml = () => {
     /**
     * @desc Helper function to build the AttributeStatement tag
     * @param  {LoginResponseAttribute} attributes    an array of attribute configuration
+    * @param  {AttributeTemplate} attributeTemplate    the attribute tag template to be used
+    * @param  {AttributeStatementTemplate} attributeStatementTemplate    the attributeStatement tag template to be used
     * @return {string}
     */
-    attributeStatementBuilder(attributes: LoginResponseAttribute[]): string {
+    attributeStatementBuilder(
+      attributes: LoginResponseAttribute[],
+      attributeTemplate: AttributeTemplate = defaultAttributeTemplate,
+      attributeStatementTemplate: AttributeStatementTemplate = defaultAttributeStatementTemplate
+    ): string {
       const attr = attributes.map(({ name, nameFormat, valueTag, valueXsiType, valueXmlnsXs, valueXmlnsXsi }) => {
         const defaultValueXmlnsXs = 'http://www.w3.org/2001/XMLSchema';
         const defaultValueXmlnsXsi = 'http://www.w3.org/2001/XMLSchema-instance';
-        return `<saml:Attribute Name="${name}" NameFormat="${nameFormat}"><saml:AttributeValue xmlns:xs="${valueXmlnsXs ? valueXmlnsXs : defaultValueXmlnsXs}" xmlns:xsi="${valueXmlnsXsi ? valueXmlnsXsi : defaultValueXmlnsXsi}" xsi:type="${valueXsiType}">{${tagging('attr', valueTag)}}</saml:AttributeValue></saml:Attribute>`;
+        let attributeLine = attributeTemplate.context;
+        attributeLine = attributeLine.replace('{Name}', name);
+        attributeLine = attributeLine.replace('{NameFormat}', nameFormat);
+        attributeLine = attributeLine.replace('{ValueXmlnsXs}', valueXmlnsXs ? valueXmlnsXs : defaultValueXmlnsXs);
+        attributeLine = attributeLine.replace('{ValueXmlnsXsi}', valueXmlnsXsi ? valueXmlnsXsi : defaultValueXmlnsXsi);
+        attributeLine = attributeLine.replace('{ValueXsiType}', valueXsiType);
+        attributeLine = attributeLine.replace('{Value}', `{${tagging('attr', valueTag)}}`);
+        return attributeLine;
       }).join('');
-      return `<saml:AttributeStatement>${attr}</saml:AttributeStatement>`;
+      return attributeStatementTemplate.context.replace('{Attributes}', attr);
     },
+
     /**
     * @desc Construct the XML signature for POST binding
     * @param  {string} rawSamlMessage      request/response xml string
@@ -273,7 +322,7 @@ const libSaml = () => {
       if (referenceTagXPath) {
         sig.addReference(
           referenceTagXPath,
-          opts.transformationAlgorithms,
+          transformationAlgorithms,
           getDigestMethod(signatureAlgorithm)
         );
       }
@@ -302,7 +351,6 @@ const libSaml = () => {
     /**
     * @desc Verify the XML signature
     * @param  {string} xml xml
-    * @param  {signature} signature context of XML signature
     * @param  {SignatureVerifierOptions} opts cert declares the X509 certificate
     * @return {boolean} verification result
     */
@@ -341,44 +389,59 @@ const libSaml = () => {
       let verified = true;
       // need to refactor later on
       selection.forEach(signatureNode => {
+
         sig.signatureAlgorithm = opts.signatureAlgorithm;
+
+        if (!opts.keyFile && !opts.metadata) {
+          throw new Error('ERR_UNDEFINED_SIGNATURE_VERIFIER_OPTIONS');
+        }
+
         if (opts.keyFile) {
           sig.keyInfoProvider = new FileKeyInfo(opts.keyFile);
-        } else if (opts.cert) {
+        }
+
+        if (opts.metadata) {
 
           const certificateNode = select(".//*[local-name(.)='X509Certificate']", signatureNode) as any;
-
           // certificate in metadata
-          let metadataCert: any = opts.cert.getX509Certificate(certUse.signing);
-          if (typeof metadataCert === 'string') {
-            metadataCert = [metadataCert];
-          } else if (metadataCert instanceof Array) {
-            // flattens the nested array of Certificates from each KeyDescriptor
+          let metadataCert: any = opts.metadata.getX509Certificate(certUse.signing);
+          // flattens the nested array of Certificates from each KeyDescriptor
+          if (Array.isArray(metadataCert)) {
             metadataCert = flattenDeep(metadataCert);
+          } else if (typeof metadataCert === 'string') {
+            metadataCert = [metadataCert];
           }
+          // normalise the certificate string
           metadataCert = metadataCert.map(utility.normalizeCerString);
 
-          // use the first
-          let selectedCert = metadataCert[0];
-          // no certificate node in response
+          // no certificate in node  response nor metadata
+          if (certificateNode.length === 0 && metadataCert.length === 0) {
+            throw new Error('NO_SELECTED_CERTIFICATE');
+          }
+
+          // certificate node in response
           if (certificateNode.length !== 0) {
             const x509CertificateData = certificateNode[0].firstChild.data;
             const x509Certificate = utility.normalizeCerString(x509CertificateData);
-            selectedCert = x509Certificate;
+
+            if (
+              metadataCert.length >= 1 &&
+              !metadataCert.find(cert => cert.trim() === x509Certificate.trim())
+            ) {
+              // keep this restriction for rolling certificate usage
+              // to make sure the response certificate is one of those specified in metadata
+              throw new Error('ERROR_UNMATCH_CERTIFICATE_DECLARATION_IN_METADATA');
+            }
+
+            sig.keyInfoProvider = new this.getKeyInfo(x509Certificate);
+
+          } else {
+            // Select first one from metadata
+            sig.keyInfoProvider = new this.getKeyInfo(metadataCert[0]);
           }
 
-          if (selectedCert === null) {
-            throw new Error('NO_SELECTED_CERTIFICATE');
-          }
-          if (metadataCert.length >= 1 && !metadataCert.find(cert => cert.trim() === selectedCert.trim())) {
-            // keep this restriction for rolling certificate usage
-            // to make sure the response certificate is one of those specified in metadata
-            throw new Error('ERROR_UNMATCH_CERTIFICATE_DECLARATION_IN_METADATA');
-          }
-          sig.keyInfoProvider = new this.getKeyInfo(selectedCert);
-        } else {
-          throw new Error('ERR_UNDEFINED_SIGNATURE_VERIFIER_OPTIONS');
         }
+
         sig.loadSignature(signatureNode);
 
         doc.removeChild(signatureNode);
@@ -471,12 +534,22 @@ const libSaml = () => {
     * @param  {string} signingAlgorithm          signing algorithm
     * @return {string} message signature
     */
-    constructMessageSignature(octetString: string, key: string, passphrase?: string, isBase64?: boolean, signingAlgorithm?: string) {
+    constructMessageSignature(
+      octetString: string,
+      key: string,
+      passphrase?: string,
+      isBase64?: boolean,
+      signingAlgorithm?: string
+    ) {
       // Default returning base64 encoded signature
       // Embed with node-rsa module
-      const decryptedKey = new nrsa(utility.readPrivateKey(key, passphrase), {
-        signingScheme: getSigningScheme(signingAlgorithm),
-      });
+      const decryptedKey = new nrsa(
+        utility.readPrivateKey(key, passphrase),
+        undefined,
+        {
+          signingScheme: getSigningScheme(signingAlgorithm),
+        }
+      );
       const signature = decryptedKey.sign(octetString);
       // Use private key to sign data
       return isBase64 !== false ? signature.toString('base64') : signature;
@@ -489,11 +562,16 @@ const libSaml = () => {
     * @param  {string} verifyAlgorithm            algorithm used to verify
     * @return {boolean} verification result
     */
-    verifyMessageSignature(metadata, octetString: string, signature: string | Buffer, verifyAlgorithm?: string) {
+    verifyMessageSignature(
+      metadata,
+      octetString: string,
+      signature: string | Buffer,
+      verifyAlgorithm?: string
+    ) {
       const signCert = metadata.getX509Certificate(certUse.signing);
       const signingScheme = getSigningScheme(verifyAlgorithm);
-      const key = new nrsa(utility.getPublicKeyPemFromCertificate(signCert), { signingScheme });
-      return key.verify(new Buffer(octetString), signature);
+      const key = new nrsa(utility.getPublicKeyPemFromCertificate(signCert), 'public', { signingScheme });
+      return key.verify(Buffer.from(octetString), Buffer.from(signature));
     },
     /**
     * @desc Get the public key in string format
@@ -528,20 +606,25 @@ const libSaml = () => {
         const targetEntityMetadata = targetEntity.entityMeta;
         const doc = new dom().parseFromString(xml);
         const assertions = select("//*[local-name(.)='Assertion']", doc) as Node[];
-        if (!Array.isArray(assertions)) {
+        if (!Array.isArray(assertions) || assertions.length === 0) {
           throw new Error('ERR_NO_ASSERTION');
         }
-        if (assertions.length !== 1) {
+        if (assertions.length > 1) {
           throw new Error('ERR_MULTIPLE_ASSERTION');
         }
+        const rawAssertionNode = assertions[0];
+
         // Perform encryption depends on the setting, default is false
         if (sourceEntitySetting.isAssertionEncrypted) {
-          xmlenc.encrypt(assertions[0].toString(), {
+
+          const publicKeyPem = utility.getPublicKeyPemFromCertificate(targetEntityMetadata.getX509Certificate(certUse.encrypt));
+
+          xmlenc.encrypt(rawAssertionNode.toString(), {
             // use xml-encryption module
-            rsa_pub: new Buffer(utility.getPublicKeyPemFromCertificate(targetEntityMetadata.getX509Certificate(certUse.encrypt)).replace(/\r?\n|\r/g, '')), // public key from certificate
-            pem: new Buffer('-----BEGIN CERTIFICATE-----' + targetEntityMetadata.getX509Certificate(certUse.encrypt) + '-----END CERTIFICATE-----'),
+            rsa_pub: Buffer.from(publicKeyPem), // public key from certificate
+            pem: Buffer.from(`-----BEGIN CERTIFICATE-----${targetEntityMetadata.getX509Certificate(certUse.encrypt)}-----END CERTIFICATE-----`),
             encryptionAlgorithm: sourceEntitySetting.dataEncryptionAlgorithm,
-            keyEncryptionAlgorighm: sourceEntitySetting.keyEncryptionAlgorithm,
+            keyEncryptionAlgorithm: sourceEntitySetting.keyEncryptionAlgorithm,
           }, (err, res) => {
             if (err) {
               console.error(err);
@@ -551,12 +634,12 @@ const libSaml = () => {
               return reject(new Error('ERR_UNDEFINED_ENCRYPTED_ASSERTION'));
             }
             const { encryptedAssertion: encAssertionPrefix } = sourceEntitySetting.tagPrefix;
-            const encryptAssertionNode = new dom().parseFromString(`<${encAssertionPrefix}:EncryptedAssertion xmlns:${encAssertionPrefix}="${namespace.names.assertion}">${res}</${encAssertionPrefix}:EncryptedAssertion>`);
-            doc.replaceChild(encryptAssertionNode, assertions[0]);
+            const encryptAssertionDoc = new dom().parseFromString(`<${encAssertionPrefix}:EncryptedAssertion xmlns:${encAssertionPrefix}="${namespace.names.assertion}">${res}</${encAssertionPrefix}:EncryptedAssertion>`);
+            doc.documentElement.replaceChild(encryptAssertionDoc.documentElement, rawAssertionNode);
             return resolve(utility.base64Encode(doc.toString()));
           });
         } else {
-          return resolve(utility.base64Encode(xml)); // No need to do encrpytion
+          return resolve(utility.base64Encode(xml)); // No need to do encryption
         }
       });
     },
@@ -576,15 +659,17 @@ const libSaml = () => {
         }
         // Perform encryption depends on the setting of where the message is sent, default is false
         const hereSetting = here.entitySetting;
-        const xml = new dom().parseFromString(entireXML);
-        const encryptedAssertions = select("/*[contains(local-name(), 'Response')]/*[local-name(.)='EncryptedAssertion']", xml) as Node[];
-        if (!Array.isArray(encryptedAssertions)) {
+        const doc = new dom().parseFromString(entireXML);
+        const encryptedAssertions = select("/*[contains(local-name(), 'Response')]/*[local-name(.)='EncryptedAssertion']", doc) as Node[];
+        if (!Array.isArray(encryptedAssertions) || encryptedAssertions.length === 0) {
           throw new Error('ERR_UNDEFINED_ENCRYPTED_ASSERTION');
         }
-        if (encryptedAssertions.length !== 1) {
+        if (encryptedAssertions.length > 1) {
           throw new Error('ERR_MULTIPLE_ASSERTION');
         }
-        return xmlenc.decrypt(encryptedAssertions[0].toString(), {
+        const encAssertionNode = encryptedAssertions[0];
+
+        return xmlenc.decrypt(encAssertionNode.toString(), {
           key: utility.readPrivateKey(hereSetting.encPrivateKey, hereSetting.encPrivateKeyPass),
         }, (err, res) => {
           if (err) {
@@ -594,9 +679,9 @@ const libSaml = () => {
           if (!res) {
             return reject(new Error('ERR_UNDEFINED_ENCRYPTED_ASSERTION'));
           }
-          const assertionNode = new dom().parseFromString(res);
-          xml.replaceChild(assertionNode, encryptedAssertions[0]);
-          return resolve([xml.toString(), res]);
+          const rawAssertionDoc = new dom().parseFromString(res);
+          doc.documentElement.replaceChild(rawAssertionDoc.documentElement, encAssertionNode);
+          return resolve([doc.toString(), res]);
         });
       });
     },
@@ -610,8 +695,8 @@ const libSaml = () => {
 
       /**
        * user can write a validate function that always returns
-       * a resolved promise and skip the validator even in 
-       * production, user will take the responsibility if 
+       * a resolved promise and skip the validator even in
+       * production, user will take the responsibility if
        * they intend to skip the validation
        */
       if (!validate) {

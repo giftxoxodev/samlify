@@ -26,7 +26,7 @@ const defaultEntitySetting = {
   isAssertionEncrypted: false,
   requestSignatureAlgorithm: signatureAlgorithms.RSA_SHA256,
   dataEncryptionAlgorithm: dataEncryptionAlgorithm.AES_256,
-  keyEncryptionAlgorithm: keyEncryptionAlgorithm.RSA_1_5,
+  keyEncryptionAlgorithm: keyEncryptionAlgorithm.RSA_OAEP_MGF1P,
   generateID: (): string => ('_' + uuid.v4()),
   relayState: '',
 };
@@ -46,6 +46,17 @@ export interface PostBindingContext extends BindingContext {
   relayState?: string;
   entityEndpoint: string;
   type: string;
+}
+
+export interface SimpleSignBindingContext extends PostBindingContext {
+  sigAlg?: string;
+  signature?: string;
+  keyInfo?: string;
+}
+
+export interface SimpleSignComputedContext extends BindingContext {
+  sigAlg?: string;
+  signature?: string;
 }
 
 export interface ParseResult {
@@ -74,6 +85,7 @@ export default class Entity {
         this.entityMeta = IdpMetadata(metadata);
         // setting with metadata has higher precedence 
         this.entitySetting.wantAuthnRequestsSigned = this.entityMeta.isWantAuthnRequestsSigned();
+        this.entitySetting.nameIDFormat = this.entityMeta.getNameIDFormat() || this.entitySetting.nameIDFormat;
         break;
       case 'sp':
         this.entityMeta = SpMetadata(metadata);

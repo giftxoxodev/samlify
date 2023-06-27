@@ -1,29 +1,44 @@
-function verifyTime(utcNotBefore?: string, utcNotOnOrAfter?: string): boolean {
+// unit is ms
+type DriftTolerance = [number, number];
+
+function verifyTime(
+  utcNotBefore: string | undefined,
+  utcNotOnOrAfter: string | undefined,
+  drift: DriftTolerance = [0, 0]
+): boolean {
 
   const now = new Date();
+
   if (!utcNotBefore && !utcNotOnOrAfter) {
-    return true; // throw exception todo
+    // show warning because user intends to have time check but the document doesn't include corresponding information
+    console.warn('You intend to have time validation however the document doesn\'t include the valid range.');
+    return true; 
   }
 
   let notBeforeLocal: Date | null = null;
   let notOnOrAfterLocal: Date | null = null;
 
+  const [notBeforeDrift, notOnOrAfterDrift] = drift;
+
   if (utcNotBefore && !utcNotOnOrAfter) {
     notBeforeLocal = new Date(utcNotBefore);
-    return +notBeforeLocal <= +now;
+    return +notBeforeLocal + notBeforeDrift <= +now;
   }
   if (!utcNotBefore && utcNotOnOrAfter) {
     notOnOrAfterLocal = new Date(utcNotOnOrAfter);
-    return now < notOnOrAfterLocal;
+    return +now < +notOnOrAfterLocal + notOnOrAfterDrift;
   }
 
   notBeforeLocal = new Date(utcNotBefore!);
   notOnOrAfterLocal = new Date(utcNotOnOrAfter!);
 
-  //Here setting time diff b/w notBeforeLocal and now can be greater than -5 seconds. This comes in the scenario when there is a mismatch of time between sp and idp server timings which result in ERR_SUBJECT_VALIDATION error
-  return +now - +notBeforeLocal > -5000  && now < notOnOrAfterLocal;
+  return (
+    +notBeforeLocal + notBeforeDrift <= +now &&
+    +now < +notOnOrAfterLocal + notOnOrAfterDrift
+  );
+
 }
 
 export {
-  verifyTime,
+  verifyTime
 };

@@ -4,7 +4,7 @@
 * @desc  Library for some common functions (e.g. de/inflation, en/decoding)
 */
 import { pki, util, asn1 } from 'node-forge';
-import { inflate, deflate } from 'deflate-js';
+import { inflate, deflate } from 'pako';
 
 const BASE64_STR = 'base64';
 
@@ -13,10 +13,24 @@ const BASE64_STR = 'base64';
  * @param arr1 {string[]}
  * @param arr2 {[]}
  */
-export function zipObject(arr1: string[], arr2: any[]) {
+export function zipObject(arr1: string[], arr2: any[], skipDuplicated = true) {
   return arr1.reduce((res, l, i) => {
+
+    if (skipDuplicated) {
+      res[l] = arr2[i];
+      return res;
+    }
+    // if key exists, aggregate with array in order to get rid of duplicate key
+    if (res[l] !== undefined) {
+      res[l] = Array.isArray(res[l])
+        ? res[l].concat(arr2[i])
+        : [res[l]].concat(arr2[i]);
+      return res;
+    }
+
     res[l] = arr2[i];
     return res;
+
   }, {});
 }
 /**
@@ -47,19 +61,19 @@ export function uniq(input: string[]) {
   return [... set];
 }
 /**
- * @desc Alternative to lodash.get 
+ * @desc Alternative to lodash.get
  * @reference https://github.com/you-dont-need/You-Dont-Need-Lodash-Underscore#_get
- * @param obj 
- * @param path 
- * @param defaultValue 
+ * @param obj
+ * @param path
+ * @param defaultValue
  */
 export function get(obj, path, defaultValue) {
   return path.split('.')
   .reduce((a, c) => (a && a[c] ? a[c] : (defaultValue || null)), obj);
 }
 /**
- * @desc Check if the input is string 
- * @param {any} input 
+ * @desc Check if the input is string
+ * @param {any} input
  */
 export function isString(input: any) {
   return typeof input === 'string';
@@ -69,8 +83,8 @@ export function isString(input: any) {
 * @param  {string} message                       plain-text message
 * @return {string} base64 encoded string
 */
-function base64Encode(message: string) {
-  return new Buffer(message).toString(BASE64_STR);
+function base64Encode(message: string | number[]) {
+  return Buffer.from(message as string).toString(BASE64_STR);
 }
 /**
 * @desc Decode string from base64 format
@@ -79,7 +93,7 @@ function base64Encode(message: string) {
 * @return {bytes/string}  decoded bytes/string depends on isBytes, default is {string}
 */
 export function base64Decode(base64Message: string, isBytes?: boolean): string | Buffer {
-  const bytes = new Buffer(base64Message, BASE64_STR);
+  const bytes = Buffer.from(base64Message, BASE64_STR);
   return Boolean(isBytes) ? bytes : bytes.toString();
 }
 /**
@@ -87,8 +101,9 @@ export function base64Decode(base64Message: string, isBytes?: boolean): string |
 * @param  {string} message
 * @return {string} compressed string
 */
-function deflateString(message: string): string {
-  return deflate(Array.prototype.map.call(message, char => char.charCodeAt(0)));
+function deflateString(message: string): number[] {
+  const input = Array.prototype.map.call(message, char => char.charCodeAt(0));
+  return Array.from(deflate(input, { raw: true }));
 }
 /**
 * @desc Decompress the compressed string
@@ -96,8 +111,10 @@ function deflateString(message: string): string {
 * @return {string} decompressed string
 */
 export function inflateString(compressedString: string): string {
-  return inflate(Array.prototype.map.call(new Buffer(compressedString, BASE64_STR).toString('binary'), char => char.charCodeAt(0)))
-    .map(byte => String.fromCharCode(byte))
+  const inputBuffer = Buffer.from(compressedString, BASE64_STR);
+  const input = Array.prototype.map.call(inputBuffer.toString('binary'), char => char.charCodeAt(0));
+  return Array.from(inflate(input, { raw: true }))
+    .map((byte: number) => String.fromCharCode(byte))
     .join('');
 }
 /**
@@ -107,7 +124,7 @@ export function inflateString(compressedString: string): string {
 * @return {string} A formatted certificate string
 */
 function _normalizeCerString(bin: string | Buffer, format: string) {
-  return bin.toString().replace(/\n/g, '').replace(/\r/g, '').replace(`-----BEGIN ${format}-----`, '').replace(`-----END ${format}-----`, '').replace(/ /g, '');
+  return bin.toString().replace(/\n/g, '').replace(/\r/g, '').replace(`-----BEGIN ${format}-----`, '').replace(`-----END ${format}-----`, '').replace(/ /g, '').replace(/\t/g, '');
 }
 /**
 * @desc Parse the .cer to string format without line break, header and footer
@@ -163,7 +180,7 @@ function getPublicKeyPemFromCertificate(x509Certificate: string) {
 }
 /**
 * @desc Read private key from pem-formatted string
-* @param {string | Buffer} keyString pem-formattted string
+* @param {string | Buffer} keyString pem-formatted string
 * @param {string} protected passphrase of the key
 * @return {string} string in pem format
 * If passphrase is used to protect the .pem content (recommend)
@@ -182,6 +199,11 @@ function convertToString(input, isOutputString) {
  */
 export function isNonEmptyArray(a) {
   return Array.isArray(a) && a.length > 0;
+}
+
+export function castArrayOpt<T>(a?: T | T[]): T[] {
+  if (a === undefined) return []
+  return Array.isArray(a) ? a : [a]
 }
 
 export function notEmpty<TValue>(value: TValue | null | undefined): value is TValue {
